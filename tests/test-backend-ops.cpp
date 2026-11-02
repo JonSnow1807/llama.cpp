@@ -8781,6 +8781,16 @@ struct test_flash_attn_ext_large_logits : public test_flash_attn_ext {
     }
 };
 
+// non-causal attention over a long KV without a mask, as used by the vision encoders in tools/mtmd (#29629):
+//     with GGML_PREC_F32 the V*softmax(KQ) sum has to be accumulated in fp32, half precision accumulators drift with the KV length
+struct test_flash_attn_ext_long_kv : public test_flash_attn_ext {
+    using test_flash_attn_ext::test_flash_attn_ext;
+
+    double max_nmse_err() override {
+        return 1e-6;
+    }
+};
+
 // GGML_OP_FLASH_ATTN_EXT with kv_rows: each q slice attends to its own list of K/V cache rows
 struct test_flash_attn_ext_kv_rows : public test_case {
     const int64_t hs;
@@ -12334,6 +12344,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // non-causal attention over a long KV without a mask (vision encoders, #29629).
+    // F32 K/V so that the CPU reference accumulates in fp32 (its reference path keeps a fp16 accumulator for F16 V),
+    //     the CUDA tile/mma kernels convert K/V to F16 either way.
+    for (int kv : { 8192, 32768, }) {
+        for (int hs : { 64, 72, }) {
+            test_cases.emplace_back(new test_flash_attn_ext_long_kv(hs, hs, 4, {1, 1}, kv, 64, false, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F32, GGML_TYPE_F32));
+        }
+    }
+
     // asymmetric head_dim (hsk != hsv) with one or both sides not 64-aligned
     test_cases.emplace_back(new test_flash_attn_ext(72, 64, 4, {1, 1}, 256, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(64, 72, 4, {1, 1}, 256, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
@@ -13014,6 +13033,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
 
     // Qwen3-VL-8B https://github.com/ggml-org/llama.cpp/issues/17012
     test_cases.emplace_back(new test_flash_attn_ext(72, 72, 16, {1, 1}, 5776, 5776, false, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+    // same shape with head size 64 (tensor core kernel on NVIDIA), fp32 accumulation for the mask-less GGML_PREC_F32 request (#29629)
+    test_cases.emplace_back(new test_flash_attn_ext(64, 64, 16, {1, 1}, 5776, 5776, false, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
 
     // Sparse flash attention (n_kv_max hint) decode across KV depths.
     // Shapes: 576/512 DeepSeek MLA, 512/512 DeepSeek-V4/GLM-5.2, 256/256 gqa12 Qwen QSA.

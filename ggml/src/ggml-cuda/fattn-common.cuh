@@ -978,6 +978,26 @@ static __global__ void flash_attn_combine_results(
     dst[tid] = VKQ_numerator / VKQ_denominator;
 }
 
+// Whether the V*softmax(KQ) sum should be kept in fp32 registers.
+// The tile and mma kernels accumulate this sum in half precision when fast fp16 math is available,
+//     with the fp32 variants the half precision accumulators only ever hold one chunk of nbatch_fa KV values
+//     and the running sum across chunks is fp32 (see #29629).
+// The LLM graph requests GGML_PREC_F32 for every flash attention op (src/llama-graph.cpp),
+//     so the precision flag alone would move the whole LLM path onto the slower variants.
+//     Only the vision encoders (tools/mtmd/clip.cpp) request GGML_PREC_F32 without a mask,
+//     their non-causal attention over 8k-37k keys is where the half precision sum drifts.
+static bool ggml_cuda_fattn_use_fp32_acc(const ggml_tensor * dst, const int cc) {
+    const ggml_tensor * V       = dst->src[2];
+    const ggml_tensor * mask    = dst->src[3];
+    const ggml_tensor * kv_rows = dst->src[5];
+
+    float logit_softcap = 0.0f;
+    memcpy(&logit_softcap, (const float *) dst->op_params + 2, sizeof(float));
+
+    return GGML_CUDA_CC_IS_NVIDIA(cc) && fast_fp16_available(cc) && ggml_prec_get_acc(dst) == GGML_PREC_F32 &&
+        mask == nullptr && kv_rows == nullptr && logit_softcap == 0.0f && V->ne[0] <= 128;
+}
+
 template <int DV, int ncols1, int ncols2>
 void launch_fattn(
     ggml_backend_cuda_context & ctx, ggml_tensor * dst, fattn_kernel_t fattn_kernel, const int nwarps, const size_t nbytes_shared,
