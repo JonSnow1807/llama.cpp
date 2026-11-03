@@ -8782,12 +8782,14 @@ struct test_flash_attn_ext_large_logits : public test_flash_attn_ext {
 };
 
 // non-causal attention over a long KV without a mask, as used by the vision encoders in tools/mtmd (#29629):
-//     with GGML_PREC_F32 the V*softmax(KQ) sum has to be accumulated in fp32, half precision accumulators drift with the KV length
+//     with GGML_PREC_F32 the V*softmax(KQ) sum has to be accumulated in fp32, half precision accumulators drift with the KV length.
+// The threshold leaves room for the KV-independent error of half precision Q*K products (CUDA tile kernel: ~1.5e-6 NMSE),
+//     the drift of the half precision sum is 4.6e-6 at 8192 and 1.6e-5 at 32768 keys (RTX 5090, 8 output tiles).
 struct test_flash_attn_ext_long_kv : public test_flash_attn_ext {
     using test_flash_attn_ext::test_flash_attn_ext;
 
     double max_nmse_err() override {
-        return 1e-6;
+        return 3e-6;
     }
 };
 
